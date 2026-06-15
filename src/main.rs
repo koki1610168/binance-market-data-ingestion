@@ -7,7 +7,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use rustls::crypto::ring;
-use url::Url;
+use std::fs::OpenOptions;
+use csv;
 
 #[derive(Debug, Deserialize)]
 struct AggrTrade {
@@ -62,17 +63,34 @@ async fn main() -> Result<()> {
 
     let (mut write, mut read) = ws_stream.split();
 
+    // csv file creation
+    let csv_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open("./data/trades/BTC/btc_trade.csv")?;
 
+    let mut csv_writer = csv::Writer::from_writer(csv_file);
+    csv_writer.write_record(&["event_time", "symbol", "price", "qty", "is_mm"]);
+
+    let mut count: u32 = 1;
     while let Some(msg) = read.next().await {
         match msg {
             Ok(msg) => {
                 if let Ok(text) = msg.to_text() {
                     let trade: AggrTrade = serde_json::from_str(text)?;
 
-                    let symbol: String = trade.symbol;
-                    let price: f64 = trade.price.parse()?;
-                    let qty: f64 = trade.qty.parse()?;
-                    println!("{} {} @ {}", symbol, qty, price);
+                    csv_writer.serialize((trade.event_time, &trade.symbol, &trade.price, &trade.qty, trade.is_mm))?;
+
+                    println!("{} {} @ {}", &trade.symbol, &trade.qty, &trade.price);
+                    
+                    if count == 100 {
+                        csv_writer.flush()?;
+                        break;
+                    }
+                    count += 1;
+
+
                 }
             }
             Err(e) => {
