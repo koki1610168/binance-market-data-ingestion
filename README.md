@@ -4,7 +4,7 @@
 * Listening to WebSocket endpoin on Binance and maintain trades and orderbook data
 
 ## TODO
-* [ ] Listen to Binance WebSocket
+* [x] Listen to Binance WebSocket
     * [ ] Reconnection Logic
     * [ ] Heartbeat
 * [ ] Receive trades data
