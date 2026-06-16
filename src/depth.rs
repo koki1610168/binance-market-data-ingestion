@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json};
+use reqwest::Url;
 
 // Need StreamExt to split the WebSocket
 use futures_util::{SinkExt, StreamExt};
@@ -11,7 +12,11 @@ use std::fs::OpenOptions;
 use csv;
 
 #[derive(Debug, Deserialize)]
-struct Depth {
+struct Level(String, String);
+
+
+#[derive(Debug, Deserialize)]
+struct OrderBookDiff {
     #[serde(rename = "e")]
     event_type: String,
 
@@ -34,20 +39,57 @@ struct Depth {
     prev_final_id: u64,
 
     #[serde(rename = "b")]
-    bids: Vec<[String; 2]>,
+    bids: Vec<Level>,
 
     #[serde(rename = "a")]
-    asks: Vec<[String; 2]>,
+    asks: Vec<Level>,
 }
 
 
-pub async fn run_depth_collector() -> Result<()> {
+#[derive(Debug, Deserialize)]
+struct OrderBookSnapshot {
+    #[serde(rename = "lastUpdateId")]
+    last_update_id: u64,
+
+
+    #[serde(rename = "E")]
+    output_time: u64,
+
+    #[serde(rename = "T")]
+    tx_time: u64,
+
+    bids: Vec<Level>,
+
+    asks: Vec<Level>,
+}
+
+impl OrderBookSnapshot {
+    async fn get() -> anyhow::Result<Self> {
+        let url = "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=1000";
+
+        let url = Url::parse(&*url)?;
+        let res = reqwest::get(url).await?;
+        println!("status: {}", res.status());
+
+        let text = res.text().await?;
+        println!("raw response: {}", text);
+
+
+        let snapshot: OrderBookSnapshot = serde_json::from_str(&text)?;
+
+
+        Ok(snapshot)
+
+    }
+}
+pub async fn run_depth_collector() -> anyhow::Result<()> {
     // Somehow necessary to define defalt provider
     ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
 
     
+    // order book diff WebSocket URL
     let url = "wss://fstream.binance.com/public/ws/btcusdt@depth";
 
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -57,11 +99,13 @@ pub async fn run_depth_collector() -> Result<()> {
     let (mut write, mut read) = ws_stream.split();
 
     let mut prev_final_id: u64 = 0;
+
+    let mut buffer_diff: Vec<OrderBookDiff> = Vec::new();
     while let Some(msg) = read.next().await {
         match msg {
             Ok(msg) => {
                 if let Ok(text) = msg.to_text() {
-                    let depth: Depth = serde_json::from_str(text)?;
+                    let depth: OrderBookDiff = serde_json::from_str(text)?;
 
                     if prev_final_id != 0 && prev_final_id != depth.prev_final_id {
                         eprintln!("Depth lost");
@@ -69,6 +113,11 @@ pub async fn run_depth_collector() -> Result<()> {
                     } else {
                         println!("{:#?}", depth);
                         prev_final_id = depth.final_id;
+                        buffer_diff.push(depth);
+                    }
+
+                    if buffer_diff.len() >= 10 {
+                        break;
                     }
                 }
             }
@@ -77,10 +126,13 @@ pub async fn run_depth_collector() -> Result<()> {
                 break;
             }
         }
+
     }
 
+    let snapshot = OrderBookSnapshot::get().await?;
+    println!("{:#?}", snapshot);
+    println!("Done");
 
     Ok(())
-    
 }
 
